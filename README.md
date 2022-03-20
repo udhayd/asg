@@ -17,4 +17,4 @@ $ ./provision.sh -n "name of stack"
 $ ./destroy.sh
 
 ## To Access the webserver
-Please verify the websever access through ELB DNS Name http://ipaddress
+Please verify the websever access through ELB DNS Name http://elbdns
