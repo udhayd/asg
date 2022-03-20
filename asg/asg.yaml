@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'AutoScalingGroup , EC2 Instance , Loadbalancer , TargetGroup Creation for Test'
+
+Parameters:
+  InstanceType:
+    Description: Instance type to launch
+    Type: String
+    Default: t2.micro
+  ImageId:
+    Description: AMI Id
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+  LaunchTemplateVersion:
+    Description: 'Launch Template Version Number'
+    Type: String
+    Default: 1
+  ASGMinSize:
+    Description: 'Minimum size of ASG'
+    Type: Number
+    Default: 1
+  ASGMaxSize:
+    Description: 'Maximum size of ASG'
+    Type: Number
+    Default: 5
+  ASGDesiredCapacity:
+    Description: 'Desired capacity of ASG'
+    Type: Number
+    Default: 1
+
+
+Resources:
+  ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "${AWS::StackName}-ASG"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !Ref LaunchTemplateVersion
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      MaxInstanceLifetime: 86400
+      MinSize: !Ref ASGMinSize
+      MaxSize: !Ref ASGMaxSize
+      DesiredCapacity: !Ref ASGDesiredCapacity
+      MetricsCollection:
+        - Granularity: 1Minute
+      VPCZoneIdentifier:
+        - Fn::ImportValue: PublicSubnet1ID
+      HealthCheckGracePeriod: 300
+      HealthCheckType: EC2
+      TerminationPolicies:
+        - OldestInstance
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${AWS::StackName}-LT"
+      LaunchTemplateData: 
+        IamInstanceProfile: 
+          Name: !Ref InstanceProfile
+        ImageId: !Ref ImageId
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds:
+          - !Ref SecurityGroup
+        TagSpecifications: 
+        - ResourceType: volume
+          Tags:
+          - Key: Name
+            Value:
+              Fn::Sub: "app01-vol1"
+        - ResourceType: instance
+          Tags:
+          - Key: Name
+            Value:
+              Fn::Sub: "app01"
+        UserData:
+          Fn::Base64:
+            Fn::Sub: | 
+              #!/bin/bash
+              exec >/root/bootstrap.log 2>&1
+              set -x
+              #### Bootstrap for application
+              amazon-linux-extras install nginx1 -y
+              systemctl enable nginx
+              systemctl start nginx
+              netstat -ntlp
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${AWS::StackName}-LB'
+      Scheme: internet-facing
+      Type: application
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Subnets: 
+        - Fn::ImportValue: PublicSubnet1ID
+        - Fn::ImportValue: PublicSubnet2ID
+      Tags:
+        - Key: Name
+          Value:
+            Fn::Sub: "${AWS::StackName}-LB"
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${AWS::StackName}-TG'
+      Port: 80
+      Protocol: HTTP
+      HealthCheckPort: "80"
+      TargetType: instance
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '20'
+      VpcId:
+        Fn::ImportValue: MyVPCID
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: TargetGroup
+      LoadBalancerArn: !Ref 'LoadBalancer'
+      Port: 80
+      Protocol: HTTP
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName:
+        Fn::Sub: "${AWS::StackName}-SG"
+      GroupDescription:
+        Fn::Sub: "${AWS::StackName} SG"
+      VpcId:
+        Fn::ImportValue: MyVPCID
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+  
+  SecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties: 
+      GroupId: !Ref SecurityGroup
+      IpProtocol: -1
+      SourceSecurityGroupId: !GetAtt SecurityGroup.GroupId
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - Ref: InstanceRole
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
